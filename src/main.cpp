@@ -9,6 +9,8 @@ I2SStream i2s;
 
 HardwareSerial serial_bt(2);
 
+unsigned long last_rssi_check = 0;
+
 
 void serial_send(String str);
 
@@ -32,16 +34,13 @@ void bluetoothsink_avrc_metadata_callback(uint8_t data1, const uint8_t *data2)
   if (data1 == 0x1) // Title
   {        
       strncpy(bluetooth_media_title, (char *)data2, sizeof(bluetooth_media_title) - 1);
-      //Serial.write(bluetooth_media_title);
+
       serial_send("AT+TITLE=" + String(bluetooth_media_title));
   }
   else if (data1 == 0x2) // Artist
   {
-      //strncat(bluetooth_media_title, " - ", sizeof(bluetooth_media_title) - 1);
-      //strncat(bluetooth_media_title, (char *)data2, sizeof(bluetooth_media_title) - 1);
       strncpy(bluetooth_media_artist, (char *)data2, sizeof(bluetooth_media_artist) - 1);
       
-      //Serial.write(bluetooth_media_artist);
       serial_send("AT+ARTIST=" + String(bluetooth_media_artist));
       
   }
@@ -50,7 +49,7 @@ void bluetoothsink_avrc_metadata_callback(uint8_t data1, const uint8_t *data2)
 void connection_state_changed(esp_a2d_connection_state_t state, void *ptr)
 {
   Serial.println(a2dp_sink.to_str(state));
-  serial_bt.println("AT+CONNSTATE=" + String(a2dp_sink.to_str(state)));
+  serial_send("AT+CONNSTATE=" + String(a2dp_sink.to_str(state)));
 }
 
 // for esp_a2d_audio_state_t see https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/bluetooth/esp_a2dp.html#_CPPv421esp_a2d_audio_state_t
@@ -72,7 +71,20 @@ void audio_state_changed(esp_a2d_audio_state_t state, void *ptr)
 
 
   }
-  serial_bt.println("AT+AUDIOSTATE=" + str);
+  serial_send("AT+AUDIOSTATE=" + str);
+}
+
+void bt_rssi_changed(esp_bt_gap_cb_param_t::read_rssi_delta_param &rssi)
+{
+  static int8_t last_rssi;
+  Serial.print("RSSI: ");
+  Serial.print(rssi.rssi_delta);
+  Serial.println(" dBm");
+
+  if(last_rssi != rssi.rssi_delta)
+    serial_send("AT+RSSI=" + String(rssi.rssi_delta));
+
+  last_rssi = rssi.rssi_delta;
 }
 
 void setup() 
@@ -84,7 +96,7 @@ void setup()
 
   serial_bt.begin(115200, SERIAL_8N1, 16, 27);
 
-  serial_bt.println("AT+READY");
+  serial_send("AT+READY");
   
 
   // register callback
@@ -92,7 +104,9 @@ void setup()
   a2dp_sink.set_avrc_metadata_callback(bluetoothsink_avrc_metadata_callback);
   a2dp_sink.set_on_connection_state_changed(connection_state_changed);
   a2dp_sink.set_on_audio_state_changed(audio_state_changed);
+  a2dp_sink.set_rssi_callback(bt_rssi_changed);
   
+  a2dp_sink.set_rssi_active(true);  
   a2dp_sink.set_auto_reconnect(true);
 
   // setup I2S
@@ -153,11 +167,17 @@ void loop()
 {
    delay(100); 
 
-    if(serial_bt.available() > 0)
-    {
-      String str = serial_bt.readStringUntil('\n');      
-      
-      Serial.println("Recv: "  + str);
-      command_parse(str);
-    }
+  if(serial_bt.available() > 0)
+  {
+    String str = serial_bt.readStringUntil('\n');      
+    
+    Serial.println("Recv: "  + str);
+    command_parse(str);
+  }
+
+  if (a2dp_sink.is_connected() && (millis() - last_rssi_check) > 3000) 
+  {
+    a2dp_sink.update_rssi();          
+    last_rssi_check = millis();
+  }
 }
